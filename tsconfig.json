@@ -1,0 +1,299 @@
+/**
+ * NewAnalysis — KZA Luxury Edition
+ * Light · Glassmorphism · Links · Fotos · Áudio · Docs · n8n
+ */
+
+import { useState } from 'react';
+import { useLocation } from 'wouter';
+import DashboardLayout from '@/components/DashboardLayout';
+import AudioRecorder from '@/components/AudioRecorder';
+import { sendAnalysisToN8n, type AnalysisData } from '@/lib/webhookService';
+import { savePropertyAnalysis, updatePropertyAnalysisStatus } from '@/lib/supabaseService';
+import { useAnalysis } from '@/contexts/AnalysisContext';
+import { toast } from 'sonner';
+
+interface LinkItem { id: string; url: string; title: string; }
+interface FileItem { id: string; name: string; type: 'image'|'audio'|'document'|'spreadsheet'; size: number; }
+
+const fmtSize = (b: number) => {
+  const i = Math.floor(Math.log(Math.max(b, 1)) / Math.log(1024));
+  return (b / Math.pow(1024, i)).toFixed(0) + ['B','KB','MB'][i];
+};
+
+/* ── Section ── */
+function Section({ icon, bg, title, count, children }: {
+  icon: string; bg: string; title: string; count?: number; children: React.ReactNode;
+}) {
+  return (
+    <div className="k-section k-anim">
+      <div className="k-section-hdr">
+        <div className="k-icon-wrap" style={{ background: bg }}>{icon}</div>
+        <span className="k-section-title">{title}</span>
+        {!!count && (
+          <span style={{
+            marginLeft: 8, background: 'var(--primary)', color: 'var(--on-primary)',
+            borderRadius: 99, fontSize: 11, fontWeight: 700, padding: '2px 8px',
+            fontFamily: 'var(--mono)',
+          }}>{count}</span>
+        )}
+      </div>
+      <div className="k-section-body">{children}</div>
+    </div>
+  );
+}
+
+/* ── Dropzone ── */
+function Dropzone({ accept, type, label, onFiles }: {
+  accept: string; type: FileItem['type']; label: string;
+  onFiles: (f: FileItem[]) => void;
+}) {
+  const [hover, setHover] = useState(false);
+  return (
+    <label className="k-dropzone"
+      style={hover ? { borderColor: 'var(--gold)', background: 'rgba(117,91,0,0.04)' } : {}}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+      <span style={{ fontSize: 22 }}>
+        {type === 'image' ? '🖼️' : type === 'audio' ? '🎵' : type === 'document' ? '📄' : '📊'}
+      </span>
+      <span style={{ fontSize: 13, color: 'var(--on-surface-v)' }}>{label}</span>
+      <input type="file" accept={accept} multiple style={{ display: 'none' }}
+        onChange={e => {
+          if (e.target.files) onFiles(Array.from(e.target.files).map(f => ({
+            id: Date.now() + Math.random() + '', name: f.name, type, size: f.size,
+          })));
+        }} />
+    </label>
+  );
+}
+
+/* ── File list ── */
+function FileList({ items, onRemove }: { items: FileItem[]; onRemove: (id: string) => void }) {
+  if (!items.length) return null;
+  return (
+    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {items.map(f => (
+        <div key={f.id} style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '10px 14px',
+          background: 'rgba(249,249,251,0.7)', border: '1px solid rgba(199,198,202,0.3)',
+          borderRadius: 10,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--gold)', flexShrink: 0 }} />
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 500, color: 'var(--primary)' }}>{f.name}</p>
+              <p style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--outline)' }}>{fmtSize(f.size)}</p>
+            </div>
+          </div>
+          <button onClick={() => onRemove(f.id)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--outline)', fontSize: 15, padding: 4, transition: 'color 0.15s', lineHeight: 1 }}
+            onMouseEnter={e => (e.currentTarget.style.color = 'var(--error)')}
+            onMouseLeave={e => (e.currentTarget.style.color = 'var(--outline)')}>
+            ✕
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── Main ── */
+export default function NewAnalysis() {
+  const [, navigate]           = useLocation();
+  const { setCurrentAnalysis } = useAnalysis();
+  const [isLoading, setIsLoading] = useState(false);
+  const [links, setLinks]      = useState<LinkItem[]>([]);
+  const [newUrl, setNewUrl]    = useState('');
+  const [newTitle, setNewTitle]= useState('');
+  const [files, setFiles]      = useState<FileItem[]>([]);
+  const [obs, setObs]          = useState('');
+
+  const addLink = () => {
+    if (!newUrl.trim()) return;
+    setLinks(p => [...p, { id: Date.now()+'', url: newUrl, title: newTitle || 'Link do Imóvel' }]);
+    setNewUrl(''); setNewTitle('');
+  };
+
+  const byType = (t: FileItem['type']) => files.filter(f => f.type === t);
+  const addFiles = (fs: FileItem[]) => setFiles(p => [...p, ...fs]);
+  const removeFile = (id: string) => setFiles(p => p.filter(f => f.id !== id));
+
+  const handleAnalyze = async () => {
+    if (!links.length && !files.length && !obs.trim()) {
+      toast.error('Adicione pelo menos um link, arquivo ou observação');
+      return;
+    }
+    setIsLoading(true);
+    let rec: any = null;
+    try {
+      rec = await savePropertyAnalysis({ status: 'processando', links, observations: obs, files_count: files.length }).catch(() => null);
+      const data: AnalysisData = {
+        propertyLinks: links, images: byType('image'), audio: byType('audio'),
+        documents: byType('document'), spreadsheets: byType('spreadsheet'),
+        observations: obs, timestamp: new Date().toISOString(),
+      };
+      toast.loading('Enviando análise...');
+      const result = await sendAnalysisToN8n(data);
+      if (result.success) {
+        if (rec) await updatePropertyAnalysisStatus(rec.id, 'concluida', {
+          analysis_id: result.analysisId, address: result.extractedData?.address||'',
+          area_m2: result.extractedData?.area||0, dormitorios: result.extractedData?.bedrooms||0,
+          valor_mercado_estimado: result.extractedData?.estimatedMarketValue||0,
+          result_data: result, comparaveis: result.comparables||[],
+        }).catch(() => {});
+        toast.success('Análise processada!');
+        setCurrentAnalysis(result);
+        navigate(`/property/${result.analysisId}`);
+      } else {
+        if (rec) await updatePropertyAnalysisStatus(rec.id, 'erro', { erro_mensagem: result.error }).catch(() => {});
+        toast.error(`Erro: ${result.error}`);
+      }
+    } catch (e) {
+      console.error(e);
+      if (rec) await updatePropertyAnalysisStatus(rec.id, 'erro', { erro_mensagem: 'Erro inesperado' }).catch(() => {});
+      toast.error('Erro ao processar análise.');
+    } finally { setIsLoading(false); }
+  };
+
+  const SUMMARY = [
+    { label: 'Links',     value: links.length,          color: '#1d4ed8' },
+    { label: 'Fotos',     value: byType('image').length, color: '#7c3aed' },
+    { label: 'Áudios',    value: byType('audio').length, color: 'var(--green)' },
+    { label: 'Arquivos',  value: byType('document').length + byType('spreadsheet').length, color: 'var(--gold)' },
+  ];
+
+  return (
+    <DashboardLayout>
+      <div className="k-page-hdr">
+        <p className="k-eyebrow">Coleta de Dados · Análise Automática · n8n</p>
+        <h1 className="k-page-title">Nova Análise</h1>
+        <p className="k-page-sub">Adicione os dados do imóvel para análise automática com comparáveis de mercado</p>
+      </div>
+
+      <div className="k-content">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxWidth: 800 }}>
+
+          {/* Links */}
+          <Section icon="🔗" bg="rgba(59,130,246,0.1)" title="Links do Imóvel" count={links.length}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <input className="k-input" type="url" placeholder="https://www.imoveisweb.com.br/imovel/..."
+                value={newUrl} onChange={e => setNewUrl(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addLink()} />
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input className="k-input" type="text" placeholder="Título (ex: Anúncio Original)"
+                  value={newTitle} onChange={e => setNewTitle(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && addLink()} style={{ flex: 1 }} />
+                <button onClick={addLink} className="k-btn k-btn-primary" style={{ flexShrink: 0 }}>
+                  + Adicionar
+                </button>
+              </div>
+            </div>
+            {links.length > 0 && (
+              <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {links.map(l => (
+                  <div key={l.id} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '11px 14px', background: 'rgba(249,249,251,0.7)',
+                    border: '1px solid rgba(199,198,202,0.3)', borderRadius: 10,
+                  }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <p style={{ fontSize: 13, fontWeight: 600, color: 'var(--primary)', marginBottom: 2 }}>{l.title}</p>
+                      <p style={{ fontSize: 12, color: 'var(--outline)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.url}</p>
+                    </div>
+                    <button onClick={() => setLinks(p => p.filter(x => x.id !== l.id))}
+                      style={{ marginLeft: 12, background: 'none', border: 'none', cursor: 'pointer', color: 'var(--outline)', fontSize: 15, flexShrink: 0, transition: 'color 0.15s' }}
+                      onMouseEnter={e => (e.currentTarget.style.color = 'var(--error)')}
+                      onMouseLeave={e => (e.currentTarget.style.color = 'var(--outline)')}>
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Section>
+
+          {/* Fotos */}
+          <Section icon="🖼️" bg="rgba(167,139,250,0.12)" title="Fotos do Imóvel" count={byType('image').length}>
+            <Dropzone accept=".jpg,.jpeg,.png,.webp" type="image" label="Clique ou arraste imagens aqui" onFiles={addFiles} />
+            <FileList items={byType('image')} onRemove={removeFile} />
+          </Section>
+
+          {/* Áudio */}
+          <Section icon="🎙️" bg="rgba(78,222,163,0.12)" title="Áudio / Transcrição" count={byType('audio').length}>
+            <div style={{
+              background: 'rgba(236,194,70,0.08)', border: '1px solid rgba(117,91,0,0.15)',
+              borderRadius: 10, padding: '16px 18px', marginBottom: 10,
+            }}>
+              <AudioRecorder onRecordingComplete={blob => addFiles([{
+                id: Date.now()+'', type: 'audio',
+                name: `Gravação · ${new Date().toLocaleTimeString('pt-BR')}`, size: blob.size,
+              }])} />
+            </div>
+            <Dropzone accept=".mp3,.wav,.m4a,.ogg,.webm" type="audio" label="Ou selecione arquivos de áudio" onFiles={addFiles} />
+            <FileList items={byType('audio')} onRemove={removeFile} />
+          </Section>
+
+          {/* Documentos */}
+          <Section icon="📄" bg="rgba(236,194,70,0.12)" title="Documentos" count={byType('document').length}>
+            <Dropzone accept=".pdf,.doc,.docx,.txt" type="document" label="Clique ou arraste documentos aqui" onFiles={addFiles} />
+            <FileList items={byType('document')} onRemove={removeFile} />
+          </Section>
+
+          {/* Planilhas */}
+          <Section icon="📊" bg="rgba(59,130,246,0.1)" title="Planilhas" count={byType('spreadsheet').length}>
+            <Dropzone accept=".xls,.xlsx,.csv" type="spreadsheet" label="Clique ou arraste planilhas aqui" onFiles={addFiles} />
+            <FileList items={byType('spreadsheet')} onRemove={removeFile} />
+          </Section>
+
+          {/* Observações */}
+          <Section icon="💬" bg="rgba(167,139,250,0.12)" title="Observações">
+            <textarea className="k-textarea" rows={5}
+              placeholder="Adicione observações sobre o imóvel, características especiais, histórico, pontos de atenção..."
+              value={obs} onChange={e => setObs(e.target.value)} />
+          </Section>
+
+          {/* CTA / Resumo */}
+          <div className="k-section k-anim k-anim-6" style={{ overflow: 'hidden' }}>
+            {/* Summary bar */}
+            <div style={{
+              display: 'grid', gridTemplateColumns: 'repeat(4,1fr)',
+              borderBottom: '1px solid rgba(199,198,202,0.2)',
+            }}>
+              {SUMMARY.map((s, i) => (
+                <div key={s.label} style={{
+                  padding: '18px 24px', textAlign: 'center',
+                  borderRight: i < 3 ? '1px solid rgba(199,198,202,0.2)' : 'none',
+                }}>
+                  <p style={{ fontFamily: 'var(--mono)', fontSize: 10, fontWeight: 600, color: 'var(--on-surface-v)', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>
+                    {s.label}
+                  </p>
+                  <p style={{ fontFamily: 'var(--mono)', fontSize: 30, fontWeight: 600,
+                    color: s.value > 0 ? s.color : 'var(--outline)', letterSpacing: '-0.03em', lineHeight: 1 }}>
+                    {s.value}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            {/* CTA */}
+            <div style={{ padding: '20px 24px' }}>
+              <button onClick={handleAnalyze} disabled={isLoading}
+                className="k-btn k-btn-gold k-btn-lg"
+                style={{ width: '100%' }}>
+                {isLoading ? (
+                  <><div className="k-spinner" style={{ borderTopColor: '#fff', borderColor: 'rgba(255,255,255,0.25)' }} />Processando análise...</>
+                ) : (
+                  <>⚡ Fazer Análise com n8n →</>
+                )}
+              </button>
+              <p style={{ textAlign: 'center', fontSize: 12, color: 'var(--outline)', marginTop: 10 }}>
+                A análise é processada via n8n e pode levar alguns minutos
+              </p>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </DashboardLayout>
+  );
+}

@@ -1,0 +1,838 @@
+/**
+ * MatriculaAnalysis — KZA Luxury Edition
+ * PDF download bonito · Filtros · Toggle histórico
+ */
+
+import { useState, useEffect, useMemo } from 'react';
+import DashboardLayout from '@/components/DashboardLayout';
+import MatriculaLoadingScreen from '@/components/MatriculaLoadingScreen';
+import {
+  sendMatriculaForAnalysis, formatCurrency, formatArea, formatPercentage,
+  type MatriculaAnalysisResult,
+} from '@/lib/matriculaService';
+import {
+  saveMatriculaAnalysis, updateMatriculaAnalysisStatus,
+  deleteMatriculaAnalysis, getMatriculaAnalyses,
+} from '@/lib/supabaseService';
+import { toast } from 'sonner';
+
+/* ─── PDF Generator ─── */
+function generatePDFReport(analysis: any, result?: MatriculaAnalysisResult) {
+  const im = result?.imovel_analisado;
+  const rm = result?.resultado_mercado;
+  const mr = result?.matricula_resumo;
+  const comparaveis = result?.comparaveis || [];
+
+  const fmt = (v: number) => v > 0
+    ? `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+    : '—';
+
+  const date = new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
+
+  const confColor = rm?.confianca_calculo === 'alta' ? '#009869'
+    : rm?.confianca_calculo === 'media' ? '#755b00' : '#ba1a1a';
+  const confLabel = rm?.confianca_calculo === 'alta' ? 'Alta'
+    : rm?.confianca_calculo === 'media' ? 'Média' : 'Baixa';
+
+  const htmlContent = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8"/>
+  <title>Laudo KZA — ${analysis.arquivo_nome || 'Análise'}</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+    @page { size: A4; margin: 16mm 14mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #fff; color: #1a1c1d;
+      font-size: 11px; line-height: 1.55;
+      -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    }
+
+    /* ── Header ── */
+    .header {
+      display: flex; justify-content: space-between; align-items: flex-start;
+      padding: 0 0 18px; border-bottom: 2px solid #030304; margin-bottom: 22px;
+    }
+    .brand { display: flex; align-items: flex-start; gap: 12px; }
+    .brand-logo {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 28px; font-weight: 700; letter-spacing: -0.04em; color: #030304;
+      line-height: 1;
+    }
+    .brand-sub {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 8px; font-weight: 500; color: #77767b;
+      letter-spacing: 0.18em; text-transform: uppercase; margin-top: 4px;
+    }
+    .header-meta { text-align: right; }
+    .header-meta .doc-type {
+      font-family: 'Space Grotesk', sans-serif;
+      font-size: 9px; font-weight: 600; color: #755b00;
+      letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 4px;
+    }
+    .header-meta .doc-date { font-size: 11px; color: #46464a; }
+    .header-meta .doc-file { font-size: 10px; color: #77767b; margin-top: 2px; max-width: 220px; text-align: right; }
+
+    /* ── Valor destaque ── */
+    .valor-bloco {
+      background: #030304; border-radius: 10px;
+      padding: 20px 24px; margin-bottom: 18px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .valor-label {
+      font-family: 'Space Grotesk', sans-serif; font-size: 9px; font-weight: 600;
+      color: rgba(255,255,255,0.5); letter-spacing: 0.2em; text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .valor-num {
+      font-family: 'Space Grotesk', sans-serif; font-size: 32px; font-weight: 700;
+      color: #ffffff; letter-spacing: -0.04em; line-height: 1;
+    }
+    .conf-badge {
+      background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 6px; padding: 8px 14px; text-align: center;
+    }
+    .conf-label { font-family: 'Space Grotesk', sans-serif; font-size: 8px; color: rgba(255,255,255,0.45); letter-spacing: 0.14em; text-transform: uppercase; margin-bottom: 3px; }
+    .conf-val { font-family: 'Space Grotesk', sans-serif; font-size: 16px; font-weight: 700; }
+
+    /* ── Grid de métricas ── */
+    .metrics-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 10px; margin-bottom: 18px;
+    }
+    .metric-card {
+      background: #f3f3f5; border-radius: 8px; padding: 12px 14px;
+    }
+    .metric-label {
+      font-family: 'Space Grotesk', sans-serif; font-size: 8px; font-weight: 600;
+      color: #77767b; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 5px;
+    }
+    .metric-val { font-family: 'Space Grotesk', sans-serif; font-size: 15px; font-weight: 600; color: #1a1c1d; }
+    .metric-val.positive { color: #009869; }
+    .metric-val.negative { color: #ba1a1a; }
+
+    /* ── Seções ── */
+    .section { margin-bottom: 18px; }
+    .section-title {
+      font-family: 'Space Grotesk', sans-serif; font-size: 9px; font-weight: 600;
+      color: #46464a; letter-spacing: 0.18em; text-transform: uppercase;
+      padding-bottom: 6px; border-bottom: 1px solid #e2e2e4; margin-bottom: 12px;
+    }
+
+    /* ── Fields grid ── */
+    .fields-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .field-label { font-family: 'Space Grotesk', sans-serif; font-size: 8px; font-weight: 600; color: #77767b; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 3px; }
+    .field-val { font-size: 12px; font-weight: 500; color: #1a1c1d; }
+
+    /* ── Resumo ── */
+    .resumo-box { background: #f9f9fb; border-radius: 8px; padding: 14px; }
+    .resumo-text { font-size: 11px; color: #46464a; line-height: 1.7; }
+
+    /* ── Ônus ── */
+    .onus-grid { display: flex; gap: 10px; }
+    .onus-item {
+      display: flex; align-items: center; gap: 6px;
+      background: #f3f3f5; border-radius: 8px; padding: 10px 14px; flex: 1;
+    }
+    .onus-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .onus-label { font-family: 'Space Grotesk', sans-serif; font-size: 10px; font-weight: 600; color: #1a1c1d; }
+    .onus-status { font-family: 'Space Grotesk', sans-serif; font-size: 9px; color: #77767b; margin-top: 1px; }
+
+    /* ── Alertas ── */
+    .alert-item { background: rgba(236,194,70,0.12); border: 1px solid rgba(117,91,0,0.2); border-radius: 7px; padding: 8px 12px; margin-bottom: 6px; font-size: 11px; color: #584400; }
+
+    /* ── Comparáveis table ── */
+    table.comp { width: 100%; border-collapse: collapse; }
+    table.comp th {
+      font-family: 'Space Grotesk', sans-serif; font-size: 8px; font-weight: 600;
+      color: #77767b; letter-spacing: 0.1em; text-transform: uppercase;
+      padding: 7px 10px; text-align: left; background: #f3f3f5; border-bottom: 1px solid #e2e2e4;
+    }
+    table.comp td { padding: 8px 10px; font-size: 11px; border-bottom: 1px solid #f0f0f0; }
+    table.comp tr:last-child td { border-bottom: none; }
+    .td-value { font-family: 'Space Grotesk', sans-serif; font-weight: 600; }
+    .td-gold { font-family: 'Space Grotesk', sans-serif; font-weight: 600; color: #755b00; }
+
+    /* ── Footer ── */
+    .footer {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 8px 14mm; border-top: 1px solid #e2e2e4;
+      background: #fff;
+    }
+    .footer-brand { font-family: 'Space Grotesk', sans-serif; font-size: 8px; color: #77767b; letter-spacing: 0.1em; }
+    .footer-page  { font-family: 'Space Grotesk', sans-serif; font-size: 8px; color: #77767b; }
+    .footer-conf  { font-family: 'Space Grotesk', sans-serif; font-size: 8px; color: #77767b; text-align: right; }
+
+    @media print {
+      .footer { position: fixed; }
+      body { padding-bottom: 32px; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Header -->
+  <div class="header">
+    <div class="brand">
+      <div>
+        <div class="brand-logo">KZA</div>
+        <div class="brand-sub">Real Estate · Investment Terminal</div>
+      </div>
+    </div>
+    <div class="header-meta">
+      <div class="doc-type">Laudo de Análise de Matrícula</div>
+      <div class="doc-date">${date}</div>
+      <div class="doc-file">${analysis.arquivo_nome || '—'}</div>
+    </div>
+  </div>
+
+  ${rm ? `
+  <!-- Valor destaque -->
+  <div class="valor-bloco">
+    <div>
+      <div class="valor-label">Valor de Mercado Estimado</div>
+      <div class="valor-num">${fmt(rm.valor_mercado_estimado)}</div>
+    </div>
+    <div class="conf-badge">
+      <div class="conf-label">Confiança</div>
+      <div class="conf-val" style="color:${confColor}">${confLabel}</div>
+    </div>
+  </div>
+
+  <!-- Métricas -->
+  <div class="metrics-grid">
+    <div class="metric-card">
+      <div class="metric-label">Média do m²</div>
+      <div class="metric-val">${fmt(rm.media_valor_m2)}</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Mediana do m²</div>
+      <div class="metric-val">${fmt(rm.mediana_valor_m2)}</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Última Transação</div>
+      <div class="metric-val">${fmt(rm.valor_ultima_transacao)}</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Diferença (R$)</div>
+      <div class="metric-val ${rm.diferenca_reais>=0?'positive':'negative'}">${fmt(rm.diferenca_reais)}</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Diferença (%)</div>
+      <div class="metric-val ${rm.percentual_vs_mercado>=0?'positive':'negative'}">${rm.percentual_vs_mercado.toFixed(1)}%</div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Status do Preço</div>
+      <div class="metric-val">${rm.status_preco || '—'}</div>
+    </div>
+  </div>
+  ` : ''}
+
+  ${im ? `
+  <!-- Imóvel -->
+  <div class="section">
+    <div class="section-title">Dados do Imóvel</div>
+    <div class="fields-grid">
+      ${im.matricula ? `<div><div class="field-label">Matrícula</div><div class="field-val">${im.matricula}</div></div>` : ''}
+      ${im.cidade ? `<div><div class="field-label">Localização</div><div class="field-val">${[im.cidade, im.estado].filter(Boolean).join(', ')}</div></div>` : ''}
+      ${im.bairro_ou_condominio ? `<div><div class="field-label">Bairro / Condomínio</div><div class="field-val">${im.bairro_ou_condominio}</div></div>` : ''}
+      ${im.rua ? `<div><div class="field-label">Rua</div><div class="field-val">${im.rua}</div></div>` : ''}
+      ${im.tipo_imovel ? `<div><div class="field-label">Tipo</div><div class="field-val">${im.tipo_imovel}</div></div>` : ''}
+      ${im.area_m2 ? `<div><div class="field-label">Área</div><div class="field-val">${im.area_m2} m²</div></div>` : ''}
+      ${im.dormitorios ? `<div><div class="field-label">Dormitórios</div><div class="field-val">${im.dormitorios}</div></div>` : ''}
+    </div>
+  </div>
+  ` : ''}
+
+  ${mr ? `
+  <!-- Resumo documental -->
+  <div class="section">
+    <div class="section-title">Resumo Documental</div>
+
+    ${mr.proprietario_atual ? `
+    <div style="margin-bottom:12px;">
+      <div class="field-label">Proprietário Atual</div>
+      <div class="field-val" style="margin-top:3px;">${mr.proprietario_atual}</div>
+    </div>` : ''}
+
+    <div class="onus-grid" style="margin-bottom:12px;">
+      <div class="onus-item">
+        <div class="onus-dot" style="background:${mr.tem_alienacao_fiduciaria_ativa ? '#ba1a1a' : '#009869'}"></div>
+        <div>
+          <div class="onus-label">Alienação Fiduciária</div>
+          <div class="onus-status">${mr.tem_alienacao_fiduciaria_ativa ? 'Ativa' : 'Livre'}</div>
+        </div>
+      </div>
+      <div class="onus-item">
+        <div class="onus-dot" style="background:${mr.tem_hipoteca_ativa ? '#ba1a1a' : '#009869'}"></div>
+        <div>
+          <div class="onus-label">Hipoteca</div>
+          <div class="onus-status">${mr.tem_hipoteca_ativa ? 'Ativa' : 'Livre'}</div>
+        </div>
+      </div>
+    </div>
+
+    ${mr.alertas?.length ? mr.alertas.map((a: string) => `<div class="alert-item">⚠ ${a}</div>`).join('') : ''}
+
+    ${mr.resumo ? `<div class="resumo-box"><p class="resumo-text">${mr.resumo}</p></div>` : ''}
+  </div>
+  ` : ''}
+
+  ${comparaveis.length > 0 ? `
+  <!-- Comparáveis -->
+  <div class="section">
+    <div class="section-title">Imóveis Comparáveis (${comparaveis.length})</div>
+    <table class="comp">
+      <thead><tr>
+        <th>Imóvel</th><th>Preço</th><th>Área</th><th>Preço/m²</th>
+      </tr></thead>
+      <tbody>
+        ${comparaveis.slice(0,8).map((c: any, i: number) => `
+        <tr>
+          <td>${c.titulo || `Comparável ${i+1}`}</td>
+          <td class="td-value">${fmt(c.preco)}</td>
+          <td>${c.area_m2 ? c.area_m2 + ' m²' : '—'}</td>
+          <td class="td-gold">${fmt(c.valor_m2)}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>
+  </div>
+  ` : ''}
+
+  <!-- Footer -->
+  <div class="footer">
+    <div class="footer-brand">KZA Real Estate · Investment Terminal</div>
+    <div class="footer-conf">Documento gerado automaticamente · ${date}</div>
+  </div>
+</body>
+</html>`;
+
+  const win = window.open('', '_blank', 'width=900,height=700');
+  if (!win) { toast.error('Pop-up bloqueado. Permita pop-ups para baixar o PDF.'); return; }
+  win.document.write(htmlContent);
+  win.document.close();
+  // slight delay to allow fonts/styles to load
+  setTimeout(() => {
+    win.focus();
+    win.print();
+  }, 800);
+}
+
+/* ─── Reconstruct result from DB ─── */
+function reconstructResult(r: any): MatriculaAnalysisResult {
+  return {
+    sucesso: r.status === 'concluida',
+    imovel_analisado: { matricula:r.matricula||'', cidade:r.cidade||'', estado:r.estado||'',
+      bairro_ou_condominio:r.bairro_ou_condominio||'', rua:r.rua||'', tipo_imovel:r.tipo_imovel||'',
+      area_m2:r.area_m2||0, dormitorios:r.dormitorios||0 },
+    resultado_mercado: { quantidade_comparaveis_usados:Array.isArray(r.comparaveis)?r.comparaveis.length:0,
+      media_valor_m2:r.media_valor_m2||0, mediana_valor_m2:r.mediana_valor_m2||0,
+      valor_mercado_estimado:r.valor_mercado_estimado||0, valor_ultima_transacao:r.valor_ultima_transacao||0,
+      diferenca_reais:r.diferenca_reais||0, percentual_vs_mercado:r.percentual_vs_mercado||0,
+      status_preco:r.status_preco||'', confianca_calculo:r.confianca_calculo||'baixa', observacoes:[] },
+    matricula_resumo: { proprietario_atual:r.proprietario_atual||'',
+      tem_alienacao_fiduciaria_ativa:r.tem_alienacao_fiduciaria_ativa||false,
+      tem_hipoteca_ativa:r.tem_hipoteca_ativa||false, alertas:r.alertas||[], resumo:r.resumo_matricula||'' },
+    comparaveis:r.comparaveis||[],
+  };
+}
+
+const STATUS: Record<string, { label:string; cls:string }> = {
+  concluida:   { label:'Concluída',   cls:'k-badge-green' },
+  processando: { label:'Processando', cls:'k-badge-gold'  },
+  erro:        { label:'Erro',        cls:'k-badge-red'   },
+  pendente:    { label:'Pendente',    cls:'k-badge-gray'  },
+};
+
+function Field({ label, value }: { label:string; value?: string|number }) {
+  return (
+    <div>
+      <p style={{ fontFamily:'var(--mono)', fontSize:10, fontWeight:600, color:'var(--on-surface-v)', letterSpacing:'0.1em', textTransform:'uppercase', marginBottom:5 }}>{label}</p>
+      <p style={{ fontSize:14, fontWeight:500, color:'var(--primary)' }}>{value||'—'}</p>
+    </div>
+  );
+}
+
+function Metric({ label, value, color='var(--primary)' }: { label:string; value:string; color?:string }) {
+  return (
+    <div style={{ background:'rgba(249,249,251,0.7)', border:'1px solid rgba(199,198,202,0.3)', borderRadius:10, padding:'13px 15px' }}>
+      <p style={{ fontFamily:'var(--mono)', fontSize:10, fontWeight:600, color:'var(--on-surface-v)', letterSpacing:'0.1em', textTransform:'uppercase', marginBottom:6 }}>{label}</p>
+      <p style={{ fontFamily:'var(--mono)', fontSize:17, fontWeight:600, color, letterSpacing:'-0.02em' }}>{value}</p>
+    </div>
+  );
+}
+
+/* ── ResultView ── */
+function ResultView({ result, fileName, analysis, onBack }: {
+  result:MatriculaAnalysisResult; fileName?:string; analysis?:any; onBack:()=>void;
+}) {
+  const im=result.imovel_analisado, rm=result.resultado_mercado, mr=result.matricula_resumo;
+  const confCls = rm.confianca_calculo==='alta'?'k-badge-green':rm.confianca_calculo==='media'?'k-badge-gold':'k-badge-red';
+  const confLabel = rm.confianca_calculo==='alta'?'Alta':rm.confianca_calculo==='media'?'Média':'Baixa';
+  const [downloading, setDownloading] = useState(false);
+
+  const handlePDF = () => {
+    setDownloading(true);
+    generatePDFReport(analysis || {}, result);
+    setTimeout(() => setDownloading(false), 1500);
+  };
+
+  return (
+    <div>
+      <div className="k-page-hdr">
+        <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:16, flexWrap:'wrap' }}>
+          <div style={{ display:'flex', alignItems:'flex-start', gap:14 }}>
+            <button onClick={onBack} className="k-btn k-btn-outline" style={{ height:34, marginTop:4, flexShrink:0 }}>← Voltar</button>
+            <div>
+              <p className="k-eyebrow">Resultado da Análise</p>
+              <h1 className="k-page-title">Matrícula Analisada</h1>
+              {fileName && <p className="k-page-sub">{fileName}</p>}
+            </div>
+          </div>
+
+          {/* PDF download */}
+          <button onClick={handlePDF} disabled={downloading}
+            className="k-btn k-btn-gold"
+            style={{ height:38, marginTop:4, gap:8, paddingLeft:18, paddingRight:18 }}>
+            {downloading ? (
+              <>
+                <div className="k-spinner" style={{ width:14, height:14, borderTopColor:'#fff', borderColor:'rgba(255,255,255,0.25)' }} />
+                Gerando PDF...
+              </>
+            ) : (
+              <>
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <path d="M7 1v8M4 6l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M2 11h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+                Baixar Laudo PDF
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="k-content" style={{ display:'flex', flexDirection:'column', gap:14 }}>
+
+        <div className="k-section k-anim k-anim-1">
+          <div className="k-section-hdr">
+            <div className="k-icon-wrap" style={{ background:'rgba(59,130,246,0.1)' }}>🏠</div>
+            <span className="k-section-title">Imóvel Analisado</span>
+          </div>
+          <div className="k-section-body" style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))', gap:20 }}>
+            <Field label="Matrícula" value={im.matricula} />
+            <Field label="Localização" value={[im.cidade,im.estado].filter(Boolean).join(', ')} />
+            <Field label="Bairro" value={im.bairro_ou_condominio} />
+            <Field label="Rua" value={im.rua} />
+            <Field label="Tipo de Imóvel" value={im.tipo_imovel} />
+            <Field label="Área" value={im.area_m2>0?formatArea(im.area_m2):undefined} />
+            {im.dormitorios>0 && <Field label="Dormitórios" value={String(im.dormitorios)} />}
+          </div>
+        </div>
+
+        <div className="k-section k-anim k-anim-2">
+          <div className="k-section-hdr">
+            <div className="k-icon-wrap" style={{ background:'rgba(236,194,70,0.15)' }}>📈</div>
+            <span className="k-section-title">Resultado de Mercado</span>
+            <span className={`k-badge ${confCls}`} style={{ marginLeft:'auto' }}>Confiança {confLabel}</span>
+          </div>
+          <div className="k-section-body">
+            <div style={{ background:'rgba(249,249,251,0.7)', border:'1px solid rgba(199,198,202,0.25)', borderRadius:12, padding:'22px 26px', marginBottom:16 }}>
+              <p style={{ fontFamily:'var(--mono)', fontSize:10, fontWeight:600, color:'var(--gold)', letterSpacing:'0.18em', textTransform:'uppercase', marginBottom:8 }}>Valor de Mercado Estimado</p>
+              <p style={{ fontFamily:'var(--mono)', fontSize:40, fontWeight:700, color:'var(--primary)', letterSpacing:'-0.04em', lineHeight:1 }}>
+                {formatCurrency(rm.valor_mercado_estimado)}
+              </p>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))', gap:10 }}>
+              <Metric label="Média do m²"      value={formatCurrency(rm.media_valor_m2)} />
+              <Metric label="Mediana do m²"     value={formatCurrency(rm.mediana_valor_m2)} />
+              <Metric label="Última Transação"  value={formatCurrency(rm.valor_ultima_transacao)} />
+              <Metric label="Diferença (R$)"    value={formatCurrency(rm.diferenca_reais)}
+                color={rm.diferenca_reais>=0?'var(--green)':'var(--error)'} />
+              <Metric label="Diferença (%)"     value={formatPercentage(rm.percentual_vs_mercado)}
+                color={rm.percentual_vs_mercado>=0?'var(--green)':'var(--error)'} />
+              <Metric label="Status do Preço"   value={rm.status_preco} />
+            </div>
+          </div>
+        </div>
+
+        {mr.resumo && (
+          <div className="k-section k-anim k-anim-3">
+            <div className="k-section-hdr">
+              <div className="k-icon-wrap" style={{ background:'rgba(167,139,250,0.12)' }}>📄</div>
+              <span className="k-section-title">Resumo Documental</span>
+            </div>
+            <div className="k-section-body" style={{ display:'flex', flexDirection:'column', gap:18 }}>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(210px,1fr))', gap:18 }}>
+                <Field label="Proprietário Atual" value={mr.proprietario_atual} />
+                <div>
+                  <p style={{ fontFamily:'var(--mono)', fontSize:10, fontWeight:600, color:'var(--on-surface-v)', letterSpacing:'0.1em', textTransform:'uppercase', marginBottom:8 }}>Ônus</p>
+                  <div style={{ display:'flex', gap:8 }}>
+                    <span className={`k-badge ${mr.tem_alienacao_fiduciaria_ativa?'k-badge-red':'k-badge-green'}`}>
+                      Alienação {mr.tem_alienacao_fiduciaria_ativa?'Ativa':'Livre'}
+                    </span>
+                    <span className={`k-badge ${mr.tem_hipoteca_ativa?'k-badge-red':'k-badge-green'}`}>
+                      Hipoteca {mr.tem_hipoteca_ativa?'Ativa':'Livre'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              {mr.alertas?.length>0 && (
+                <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                  {mr.alertas.map((a:string,i:number) => (
+                    <div key={i} style={{ display:'flex', alignItems:'flex-start', gap:10, background:'rgba(236,194,70,0.1)', border:'1px solid rgba(236,194,70,0.3)', borderRadius:10, padding:'10px 14px' }}>
+                      <span style={{ color:'var(--gold)', flexShrink:0 }}>⚠</span>
+                      <p style={{ fontSize:13, color:'#584400', lineHeight:1.6 }}>{a}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p style={{ fontSize:14, color:'var(--on-surface-v)', lineHeight:1.75 }}>{mr.resumo}</p>
+            </div>
+          </div>
+        )}
+
+        {result.comparaveis?.length>0 && (
+          <div className="k-section k-anim k-anim-4">
+            <div className="k-section-hdr">
+              <div className="k-icon-wrap" style={{ background:'rgba(236,194,70,0.12)' }}>🏘️</div>
+              <span className="k-section-title">Imóveis Comparáveis</span>
+              <span style={{ marginLeft:'auto', fontFamily:'var(--mono)', fontSize:12, color:'var(--outline)' }}>
+                {result.comparaveis.length} imóveis
+              </span>
+            </div>
+            <div style={{ overflowX:'auto' }}>
+              <table className="k-table">
+                <thead><tr><th>Imóvel</th><th>Preço</th><th>Área</th><th>Preço/m²</th><th>Link</th></tr></thead>
+                <tbody>
+                  {result.comparaveis.map((c:any,i:number) => (
+                    <tr key={i}>
+                      <td style={{ fontWeight:600 }}>{c.titulo||`Comparável ${i+1}`}</td>
+                      <td style={{ fontFamily:'var(--mono)', fontWeight:600 }}>{formatCurrency(c.preco)}</td>
+                      <td style={{ color:'var(--on-surface-v)' }}>{formatArea(c.area_m2)}</td>
+                      <td style={{ fontFamily:'var(--mono)', color:'var(--gold)' }}>{formatCurrency(c.valor_m2)}</td>
+                      <td>{c.url?<a href={c.url} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} style={{ color:'var(--gold)', fontSize:13, fontWeight:500, textDecoration:'none' }}>Ver →</a>:'—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Main Page ── */
+export default function MatriculaAnalysis() {
+  const [file, setFile]         = useState<File | null>(null);
+  const [isLoading, setLoading] = useState(false);
+  const [result, setResult]     = useState<MatriculaAnalysisResult | null>(null);
+  const [resultFN, setResultFN] = useState('');
+  const [currentAnalysis, setCurrentAnalysis] = useState<any>(null);
+  const [analyses, setAnalyses] = useState<any[]>([]);
+  const [loadingA, setLoadingA] = useState(true);
+  const [selected, setSelected] = useState<any | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [showHistory, setShowHistory] = useState(true);
+  const [hSearch, setHSearch]   = useState('');
+  const [hStatus, setHStatus]   = useState('all');
+  const [hDate, setHDate]       = useState('todos');
+  const [hDateFrom, setHDateFrom] = useState('');
+  const [hDateTo, setHDateTo]   = useState('');
+  const [hSort, setHSort]       = useState<'newest'|'oldest'|'value_desc'|'value_asc'>('newest');
+  const [showHFilters, setShowHFilters] = useState(false);
+
+  useEffect(() => { loadAnalyses(); }, []);
+
+  const loadAnalyses = async () => {
+    setLoadingA(true);
+    try { const { data } = await getMatriculaAnalyses(50, 0); setAnalyses(data||[]); }
+    catch { toast.error('Erro ao carregar análises'); }
+    finally { setLoadingA(false); }
+  };
+
+  const handleFile = (f: File) => {
+    if (f.type !== 'application/pdf') { toast.error('Selecione um PDF'); return; }
+    setFile(f); setResult(null);
+  };
+
+  const handleAnalyze = async () => {
+    if (!file) return;
+    setLoading(true);
+    const fn = file.name; let rec:any = null;
+    try {
+      rec = await saveMatriculaAnalysis({ status:'processando', arquivo_nome:fn });
+      const r = await sendMatriculaForAnalysis(file);
+      if (r.sucesso) {
+        const updData = {
+          matricula:r.imovel_analisado.matricula, cidade:r.imovel_analisado.cidade,
+          estado:r.imovel_analisado.estado, bairro_ou_condominio:r.imovel_analisado.bairro_ou_condominio,
+          rua:r.imovel_analisado.rua, tipo_imovel:r.imovel_analisado.tipo_imovel,
+          area_m2:r.imovel_analisado.area_m2, dormitorios:r.imovel_analisado.dormitorios,
+          valor_mercado_estimado:r.resultado_mercado.valor_mercado_estimado,
+          media_valor_m2:r.resultado_mercado.media_valor_m2, mediana_valor_m2:r.resultado_mercado.mediana_valor_m2,
+          valor_ultima_transacao:r.resultado_mercado.valor_ultima_transacao,
+          diferenca_reais:r.resultado_mercado.diferenca_reais, percentual_vs_mercado:r.resultado_mercado.percentual_vs_mercado,
+          status_preco:r.resultado_mercado.status_preco, confianca_calculo:r.resultado_mercado.confianca_calculo,
+          proprietario_atual:r.matricula_resumo.proprietario_atual,
+          tem_alienacao_fiduciaria_ativa:r.matricula_resumo.tem_alienacao_fiduciaria_ativa,
+          tem_hipoteca_ativa:r.matricula_resumo.tem_hipoteca_ativa,
+          alertas:r.matricula_resumo.alertas, resumo_matricula:r.matricula_resumo.resumo,
+          comparaveis:r.comparaveis,
+        };
+        await updateMatriculaAnalysisStatus(rec.id, 'concluida', updData);
+        setResultFN(fn); setResult(r); setCurrentAnalysis({ ...rec, ...updData, arquivo_nome:fn });
+        toast.success('Análise concluída!'); await loadAnalyses();
+      } else {
+        if (rec) await updateMatriculaAnalysisStatus(rec.id,'erro',{erro_mensagem:r.erro});
+        toast.error(`Erro: ${r.erro}`);
+      }
+    } catch(e) {
+      console.error(e);
+      if (rec) await updateMatriculaAnalysisStatus(rec.id,'erro',{erro_mensagem:'Erro inesperado'}).catch(()=>{});
+      toast.error('Não foi possível concluir a análise.');
+    } finally { setLoading(false); setFile(null); }
+  };
+
+  const handleDelete = async (id:string, e:React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm('Deletar esta análise?')) return;
+    try { await deleteMatriculaAnalysis(id); toast.success('Deletada'); await loadAnalyses(); }
+    catch { toast.error('Erro ao deletar'); }
+  };
+
+  const subtractDays = (n:number) => { const d=new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-n); return d; };
+  const DATE_CUTS: Record<string,Date|null> = { todos:null, hoje:new Date(new Date().setHours(0,0,0,0)), '7d':subtractDays(7), '30d':subtractDays(30), '90d':subtractDays(90) };
+
+  const filteredAnalyses = useMemo(() => {
+    let r=[...analyses];
+    const s=hSearch.toLowerCase();
+    if(s) r=r.filter(a=>(a.arquivo_nome||'').toLowerCase().includes(s)||(a.cidade||'').toLowerCase().includes(s));
+    if(hStatus!=='all') r=r.filter(a=>a.status===hStatus);
+    const cut=DATE_CUTS[hDate]; if(cut) r=r.filter(a=>new Date(a.created_at)>=cut);
+    if(hDateFrom) r=r.filter(a=>new Date(a.created_at)>=new Date(hDateFrom));
+    if(hDateTo)   r=r.filter(a=>new Date(a.created_at)<=new Date(hDateTo+'T23:59:59'));
+    r.sort((a,b)=>{
+      if(hSort==='newest') return new Date(b.created_at).getTime()-new Date(a.created_at).getTime();
+      if(hSort==='oldest') return new Date(a.created_at).getTime()-new Date(b.created_at).getTime();
+      if(hSort==='value_desc') return (b.valor_mercado_estimado||0)-(a.valor_mercado_estimado||0);
+      return (a.valor_mercado_estimado||0)-(b.valor_mercado_estimado||0);
+    });
+    return r;
+  }, [analyses,hSearch,hStatus,hDate,hDateFrom,hDateTo,hSort]);
+
+  const hFilterCount=[hSearch,hStatus!=='all',hDate!=='todos',hDateFrom,hDateTo].filter(Boolean).length;
+
+  if (isLoading) return <MatriculaLoadingScreen fileName={file?.name||'arquivo.pdf'} />;
+  if (result?.sucesso && !selected)
+    return <DashboardLayout><ResultView result={result} fileName={resultFN} analysis={currentAnalysis} onBack={()=>setResult(null)} /></DashboardLayout>;
+  if (selected)
+    return <DashboardLayout><ResultView result={reconstructResult(selected)} fileName={selected.arquivo_nome} analysis={selected} onBack={()=>setSelected(null)} /></DashboardLayout>;
+
+  return (
+    <DashboardLayout>
+      <div className="k-page-hdr">
+        <p className="k-eyebrow">Upload · IA · Resultado</p>
+        <h1 className="k-page-title">Análise de Matrícula</h1>
+        <p className="k-page-sub">Envie o PDF da matrícula para análise completa com comparáveis de mercado</p>
+      </div>
+
+      <div className="k-content" style={{ display:'flex', flexDirection:'column', gap:20 }}>
+
+        {/* Upload */}
+        <div className="k-section k-anim">
+          <div className="k-section-hdr">
+            <div className="k-icon-wrap" style={{ background:'rgba(236,194,70,0.15)' }}>📤</div>
+            <span className="k-section-title">Upload da Matrícula</span>
+          </div>
+          <div className="k-section-body">
+            <label htmlFor="file-input" className="k-dropzone"
+              onDragOver={e=>{e.preventDefault();setDragOver(true);}}
+              onDragLeave={()=>setDragOver(false)}
+              onDrop={e=>{e.preventDefault();setDragOver(false);const f=e.dataTransfer.files?.[0];if(f)handleFile(f);}}
+              style={dragOver?{borderColor:'var(--gold)',background:'rgba(117,91,0,0.04)'}:{}}>
+              <span style={{ fontSize:36 }}>📋</span>
+              <p style={{ fontSize:14, fontWeight:600, color:'var(--primary)' }}>Selecione o PDF da Matrícula</p>
+              <p style={{ fontSize:13, color:'var(--on-surface-v)' }}>Arraste e solte ou clique · Apenas PDF · Máx. 50MB</p>
+              <input id="file-input" type="file" accept=".pdf"
+                onChange={e=>{const f=e.target.files?.[0];if(f)handleFile(f);}} style={{display:'none'}}/>
+            </label>
+
+            {file && (
+              <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:12,padding:'13px 16px',background:'rgba(236,194,70,0.1)',border:'1px solid rgba(117,91,0,0.2)',borderRadius:12 }}>
+                <div style={{ display:'flex',alignItems:'center',gap:10 }}>
+                  <span style={{ fontSize:22 }}>📄</span>
+                  <div>
+                    <p style={{ fontSize:13,fontWeight:600,color:'var(--primary)' }}>{file.name}</p>
+                    <p style={{ fontFamily:'var(--mono)',fontSize:11,color:'var(--on-surface-v)' }}>{(file.size/1024).toFixed(0)} KB</p>
+                  </div>
+                </div>
+                <button onClick={handleAnalyze} className="k-btn k-btn-gold">Analisar Matrícula →</button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* History */}
+        <div className="k-anim k-anim-2">
+          {/* Header */}
+          <div style={{ display:'flex',alignItems:'center',gap:10,marginBottom:14,flexWrap:'wrap' }}>
+            <div>
+              <h2 style={{ fontSize:17,fontWeight:700,color:'var(--primary)',margin:0 }}>Análises Realizadas</h2>
+              <p style={{ fontSize:12,color:'var(--on-surface-v)',marginTop:3 }}>
+                {filteredAnalyses.length} de {analyses.length} análise{analyses.length!==1?'s':''}
+              </p>
+            </div>
+            <div style={{ marginLeft:'auto',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap' }}>
+              <button onClick={()=>setShowHFilters(v=>!v)}
+                className={`k-btn k-btn-sm ${showHFilters?'k-btn-filter-on':'k-btn-outline'}`}>
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                  <path d="M1 3h10M3 6h6M5 9h2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+                Filtrar {hFilterCount>0&&<span style={{ background:'var(--gold)',color:'#fff',borderRadius:99,fontSize:10,padding:'1px 5px',marginLeft:2 }}>{hFilterCount}</span>}
+              </button>
+
+              {/* ── TOGGLE SHOW/HIDE ── */}
+              <button onClick={()=>setShowHistory(v=>!v)} className="k-btn k-btn-outline k-btn-sm" style={{ gap:6 }}>
+                {showHistory ? (
+                  <><svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                    <ellipse cx="6.5" cy="6.5" rx="5" ry="3.5" stroke="currentColor" strokeWidth="1.5"/>
+                    <circle cx="6.5" cy="6.5" r="1.5" stroke="currentColor" strokeWidth="1.5"/>
+                  </svg>Ocultar histórico</>
+                ) : (
+                  <><svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                    <path d="M1.5 1.5l10 10M5 4a4 4 0 0 1 4.5 5M3.5 3C2.4 3.9 1.5 5.2 1.5 6.5c0 0 1.5 3.5 5 3.5a5 5 0 0 0 2-.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                  </svg>Mostrar histórico</>
+                )}
+              </button>
+
+              <button onClick={loadAnalyses} className="k-btn k-btn-ghost k-btn-sm">
+                <svg width="12" height="12" viewBox="0 0 13 13" fill="none">
+                  <path d="M11 6.5A4.5 4.5 0 1 1 6.5 2M11 2v4H7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Filters panel */}
+          {showHistory && showHFilters && (
+            <div style={{ background:'rgba(249,249,251,0.7)',border:'1px solid rgba(199,198,202,0.28)',borderRadius:12,padding:'12px 14px',marginBottom:14,display:'flex',flexWrap:'wrap',gap:8,alignItems:'center' }}>
+              <div style={{ position:'relative',flex:'1',minWidth:150,maxWidth:220 }}>
+                <svg style={{ position:'absolute',left:9,top:'50%',transform:'translateY(-50%)',color:'var(--on-surface-v)' }} width="12" height="12" viewBox="0 0 14 14" fill="none">
+                  <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.5"/>
+                  <path d="M9.5 9.5l2.5 2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                </svg>
+                <input className="k-input" style={{ paddingLeft:28,height:30,fontSize:12 }}
+                  placeholder="Buscar..." value={hSearch} onChange={e=>setHSearch(e.target.value)} />
+              </div>
+              <select className="k-select" style={{ height:30 }} value={hStatus} onChange={e=>setHStatus(e.target.value)}>
+                <option value="all">Todos status</option>
+                <option value="concluida">Concluída</option>
+                <option value="processando">Processando</option>
+                <option value="erro">Erro</option>
+              </select>
+              <select className="k-select" style={{ height:30 }} value={hDate} onChange={e=>setHDate(e.target.value)}>
+                <option value="todos">Todas as datas</option>
+                <option value="hoje">Hoje</option>
+                <option value="7d">Últimos 7 dias</option>
+                <option value="30d">Últimos 30 dias</option>
+                <option value="90d">Últimos 90 dias</option>
+              </select>
+              <div style={{ display:'flex',alignItems:'center',gap:5 }}>
+                <input type="date" className="k-input" style={{ width:136,height:30,fontSize:11 }}
+                  value={hDateFrom} onChange={e=>setHDateFrom(e.target.value)} />
+                <span style={{ fontSize:11,color:'var(--on-surface-v)' }}>–</span>
+                <input type="date" className="k-input" style={{ width:136,height:30,fontSize:11 }}
+                  value={hDateTo} onChange={e=>setHDateTo(e.target.value)} />
+              </div>
+              <select className="k-select" style={{ height:30 }} value={hSort} onChange={e=>setHSort(e.target.value as any)}>
+                <option value="newest">Mais recentes</option>
+                <option value="oldest">Mais antigas</option>
+                <option value="value_desc">Maior valor</option>
+                <option value="value_asc">Menor valor</option>
+              </select>
+              {hFilterCount>0 && (
+                <button onClick={()=>{setHSearch('');setHStatus('all');setHDate('todos');setHDateFrom('');setHDateTo('');}}
+                  className="k-btn k-btn-ghost k-btn-sm">Limpar</button>
+              )}
+            </div>
+          )}
+
+          {/* Cards grid with smooth collapse */}
+          <div style={{ overflow:'hidden', maxHeight:showHistory?'9999px':'0', opacity:showHistory?1:0, transition:'max-height 0.4s cubic-bezier(0.4,0,0.2,1), opacity 0.25s ease' }}>
+            {loadingA ? (
+              <div style={{ display:'flex',justifyContent:'center',padding:'40px 0' }}><div className="k-spinner" /></div>
+            ) : filteredAnalyses.length===0 ? (
+              <div style={{ display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'40px 0',border:'1.5px dashed rgba(199,198,202,0.6)',borderRadius:16,background:'rgba(249,249,251,0.5)' }}>
+                <span style={{ fontSize:32,marginBottom:10 }}>📁</span>
+                <p style={{ fontSize:14,color:'var(--on-surface-v)' }}>{analyses.length===0?'Nenhuma análise realizada ainda':'Nenhum resultado para os filtros'}</p>
+              </div>
+            ) : (
+              <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(285px,1fr))',gap:12 }}>
+                {filteredAnalyses.map(a => {
+                  const canOpen=a.status==='concluida';
+                  const sc=STATUS[a.status]||{label:a.status,cls:'k-badge-gray'};
+                  return (
+                    <div key={a.id}
+                      onClick={()=>{ if(!canOpen){toast.info('Esta análise ainda não foi concluída.');return;} setSelected(a);window.scrollTo(0,0); }}
+                      style={{ background:'rgba(249,249,251,0.65)',backdropFilter:'blur(20px)',border:'1px solid rgba(199,198,202,0.28)',borderRadius:14,padding:'16px 18px',boxShadow:'var(--sh-card)',cursor:canOpen?'pointer':'default',opacity:canOpen?1:0.65,transition:'all 0.22s cubic-bezier(0.4,0,0.2,1)' }}
+                      onMouseEnter={e=>{
+                        if(!canOpen)return;
+                        const el=e.currentTarget as HTMLElement;
+                        el.style.transform='translateY(-2px)';el.style.boxShadow='0 10px 36px rgba(0,0,0,0.09)';el.style.borderColor='rgba(117,91,0,0.28)';
+                      }}
+                      onMouseLeave={e=>{ const el=e.currentTarget as HTMLElement; el.style.transform='translateY(0)';el.style.boxShadow='var(--sh-card)';el.style.borderColor='rgba(199,198,202,0.28)'; }}
+                    >
+                      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10 }}>
+                        <span className={`k-badge ${sc.cls}`}>{sc.label}</span>
+                        <div style={{ display:'flex',gap:4,alignItems:'center' }}>
+                          {/* PDF download per card */}
+                          {canOpen && (
+                            <button onClick={e=>{ e.stopPropagation(); generatePDFReport(a, reconstructResult(a)); }}
+                              title="Baixar PDF"
+                              style={{ background:'none',border:'none',cursor:'pointer',color:'var(--gold)',padding:4,lineHeight:1,transition:'opacity 0.15s',opacity:0.8 }}
+                              onMouseEnter={e=>(e.currentTarget.style.opacity='1')}
+                              onMouseLeave={e=>(e.currentTarget.style.opacity='0.8')}>
+                              <svg width="13" height="13" viewBox="0 0 14 14" fill="none">
+                                <path d="M7 1v8M4 6l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                                <path d="M2 11h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                              </svg>
+                            </button>
+                          )}
+                          <button onClick={e=>handleDelete(a.id,e)}
+                            style={{ background:'none',border:'none',cursor:'pointer',color:'var(--outline)',fontSize:13,padding:4,lineHeight:1,transition:'color 0.15s' }}
+                            onMouseEnter={e=>(e.currentTarget.style.color='var(--error)')}
+                            onMouseLeave={e=>(e.currentTarget.style.color='var(--outline)')}>✕</button>
+                        </div>
+                      </div>
+                      <p style={{ fontSize:13,fontWeight:600,color:'var(--primary)',lineHeight:1.4,marginBottom:8,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' }}>
+                        {a.arquivo_nome}
+                      </p>
+                      {canOpen&&a.cidade&&<p style={{ fontSize:12,color:'var(--on-surface-v)',marginBottom:5 }}>{a.cidade}{a.estado?`, ${a.estado}`:''}</p>}
+                      {canOpen&&a.valor_mercado_estimado>0&&(
+                        <p style={{ fontFamily:'var(--mono)',fontSize:17,fontWeight:700,color:'var(--gold)' }}>
+                          {formatCurrency(a.valor_mercado_estimado)}
+                        </p>
+                      )}
+                      <div style={{ display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:10,paddingTop:9,borderTop:'1px solid rgba(199,198,202,0.2)' }}>
+                        <p style={{ fontFamily:'var(--mono)',fontSize:11,color:'var(--outline)' }}>
+                          {new Date(a.created_at).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'})}
+                        </p>
+                        {canOpen&&<span style={{ fontFamily:'var(--mono)',fontSize:11,fontWeight:600,color:'var(--gold)' }}>Ver resultado →</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </DashboardLayout>
+  );
+}

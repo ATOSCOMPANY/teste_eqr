@@ -1,0 +1,124 @@
+/**
+ * Loading Page
+ * Modernismo Corporativo: Etapas de processamento, feedback visual, confiabilidade
+ */
+
+import { useEffect, useState } from 'react';
+import { useLocation } from 'wouter';
+import { CheckCircle2, Circle } from 'lucide-react';
+import DashboardLayout from '@/components/DashboardLayout';
+
+const steps = [
+  { id: 1, label: 'Extraindo informações' },
+  { id: 2, label: 'Identificando localização' },
+  { id: 3, label: 'Buscando imóveis comparáveis' },
+  { id: 4, label: 'Calculando análise financeira' },
+  { id: 5, label: 'Gerando recomendação' },
+];
+
+export default function Loading() {
+  const [, navigate] = useLocation();
+  const [currentStep, setCurrentStep] = useState(0);
+  const [completedSteps, setCompletedSteps] = useState<number[]>([]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCurrentStep((prev) => {
+        if (prev < steps.length) {
+          setCompletedSteps((completed) => [...completed, prev]);
+          return prev + 1;
+        }
+        return prev;
+      });
+    }, 1200);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (currentStep >= steps.length) {
+      setTimeout(() => {
+        navigate('/property/1');
+      }, 1500);
+    }
+  }, [currentStep, navigate]);
+
+  return (
+    <DashboardLayout>
+      <div className="flex min-h-screen items-center justify-center bg-gradient-to-br from-white via-gray-50 to-gray-100 px-8">
+        <div className="w-full max-w-md">
+          {/* Background Image */}
+          <div
+            className="mb-12 h-48 rounded-2xl bg-cover bg-center"
+            style={{
+              backgroundImage:
+                'url(https://d2xsxph8kpxj0f.cloudfront.net/310519663601827324/WxMYW5PN8ef7rnNsmVu6MC/loading-animation-bg-HB9wjcvXLj68BhANwnVhBL.webp)',
+            }}
+          ></div>
+
+          {/* Header */}
+          <div className="mb-8 text-center">
+            <h1 className="text-3xl font-bold text-gray-900">Analisando Imóvel</h1>
+            <p className="mt-2 text-gray-600">
+              Aguarde enquanto processamos os dados...
+            </p>
+          </div>
+
+          {/* Progress Steps */}
+          <div className="space-y-4">
+            {steps.map((step, index) => {
+              const isCompleted = completedSteps.includes(index);
+              const isActive = currentStep === index;
+
+              return (
+                <div key={step.id} className="flex items-center gap-4">
+                  <div className="relative flex h-10 w-10 flex-shrink-0 items-center justify-center">
+                    {isCompleted ? (
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-100">
+                        <CheckCircle2 className="h-6 w-6 text-green-600" />
+                      </div>
+                    ) : isActive ? (
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-100">
+                        <div className="h-3 w-3 animate-pulse rounded-full bg-blue-600"></div>
+                      </div>
+                    ) : (
+                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-100">
+                        <Circle className="h-5 w-5 text-gray-400" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <p
+                      className={`text-sm font-medium ${
+                        isCompleted || isActive ? 'text-gray-900' : 'text-gray-500'
+                      }`}
+                    >
+                      {step.label}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Progress Bar */}
+          <div className="mt-8 h-2 overflow-hidden rounded-full bg-gray-200">
+            <div
+              className="h-full bg-gradient-to-r from-green-500 to-blue-600 transition-all duration-500"
+              style={{
+                width: `${((currentStep + completedSteps.length) / (steps.length * 2)) * 100}%`,
+              }}
+            ></div>
+          </div>
+
+          {/* Status Text */}
+          <p className="mt-6 text-center text-xs text-gray-500">
+            {currentStep >= steps.length
+              ? 'Redirecionando para análise...'
+              : `Etapa ${currentStep + 1} de ${steps.length}`}
+          </p>
+        </div>
+      </div>
+    </DashboardLayout>
+  );
+}
